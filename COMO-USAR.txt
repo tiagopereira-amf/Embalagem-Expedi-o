@@ -1,0 +1,20 @@
+Embalagem e expedição
+=====================
+
+Este zip é o último. Não há outro pacote para descarregar.
+
+1. Descompacte esta pasta, uma vez.
+2. No terminal, dentro dela:
+     npm install
+     npm run dev
+3. Deixe esse comando a correr.
+4. O endereço estável é http://127.0.0.1:5173/publicado.html
+   Abre a aplicação, com as fórmulas actuais. Já embalado = max(0, E − GR).
+   O balão chama-se «Embalado esta semana (plano)».
+   As próximas alterações de código aparecem ao refrescar esse endereço.
+5. No ecrã principal (http://127.0.0.1:5173/) escolha a folha BD e o SHIPDATE.
+   Os ficheiros ficam neste browser entre refreshes.
+   Publicar grava essa semana no endereço estável. Quem o abre vê essa
+   actualização, já calculada com as fórmulas da aplicação.
+
+Sem o ficheiro de picagens, o embalado desta semana fica a 0 e o plano continua visível.
