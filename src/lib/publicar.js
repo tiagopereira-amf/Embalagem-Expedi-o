@@ -16,15 +16,30 @@ export function isPublishedPage() {
 }
 
 export async function loadPublished() {
-  const response = await fetch('/api/publicar', { cache: 'no-store' });
-  if (!response.ok) throw new Error('publicar');
-  return response.json();
+  try {
+    const response = await fetch('/api/publicar', { cache: 'no-store' });
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.published) return data;
+    }
+  } catch {
+    /* o alojamento estático não tem a rota; usa o ficheiro da última publicação */
+  }
+  try {
+    const response = await fetch('/semana-publicada.json', { cache: 'no-store' });
+    if (!response.ok) return { published: false };
+    return response.json();
+  } catch {
+    return { published: false };
+  }
 }
 
 export async function savePublished(data) {
+  const token = document.querySelector('meta[name="publicar-local"]')?.getAttribute('content') || '';
+  if (!token) throw new Error('publicar');
   const response = await fetch('/api/publicar', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-publicar-token': token },
     body: JSON.stringify({ ...data, label: lisbonPublishLabel(new Date()) }),
   });
   const payload = await response.json().catch(() => ({}));

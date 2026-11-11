@@ -1,4 +1,5 @@
 node_modules
 dist
 publicado-dados.json
+src/data/plan.json
 *.tmp

@@ -1,11 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = join(root, 'publicado-dados.json');
+const PUBLIC_FILE = join(root, 'public', 'semana-publicada.json');
+const PLAN_FILE = join(root, 'src', 'data', 'plan.json');
 const INDEX_HTML = join(root, 'index.html');
+
+const localDesk = process.env.PUBLICAR_LOCAL === '1';
+const publishToken = localDesk ? randomBytes(32).toString('hex') : '';
 
 function readBody(req, limit = 80_000_000) {
   return new Promise((resolve, reject) => {
@@ -23,6 +28,16 @@ function readBody(req, limit = 80_000_000) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+function isLoopback(req) {
+  const address = req.socket?.remoteAddress || '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function localWriteAllowed(req) {
+  if (!localDesk || !publishToken || !isLoopback(req)) return false;
+  return req.headers['x-publicar-token'] === publishToken;
 }
 
 async function sourceVersion() {
@@ -50,16 +65,24 @@ async function appHtml() {
   return html.replace('/src/main.jsx', `/src/main.jsx?v=${version}`);
 }
 
+async function readJsonFile(file) {
+  const raw = await readFile(file, 'utf8');
+  const data = JSON.parse(raw);
+  if (!data?.at) return null;
+  return data;
+}
+
 async function readPublished() {
-  try {
-    const raw = await readFile(DATA_FILE, 'utf8');
-    const data = JSON.parse(raw);
-    if (!data?.at) return { published: false };
-    return data;
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return { published: false };
-    throw error;
+  for (const file of [DATA_FILE, PUBLIC_FILE]) {
+    try {
+      const data = await readJsonFile(file);
+      if (data) return data;
+    } catch (error) {
+      if (error && error.code === 'ENOENT') continue;
+      throw error;
+    }
   }
+  return { published: false };
 }
 
 function assertData(data) {
@@ -69,16 +92,29 @@ function assertData(data) {
   if (JSON.stringify(data).length > 80_000_000) throw new Error('size');
 }
 
-async function writeData(data) {
-  await mkdir(dirname(DATA_FILE), { recursive: true });
-  const tmp = `${DATA_FILE}.tmp`;
-  await writeFile(tmp, JSON.stringify(data), 'utf8');
+async function writeOne(file, body) {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, body, 'utf8');
   try {
-    await rename(tmp, DATA_FILE);
+    await rename(tmp, file);
   } catch (error) {
     await unlink(tmp).catch(() => {});
     throw error;
   }
+}
+
+async function writeData(data) {
+  const body = JSON.stringify(data);
+  await writeOne(DATA_FILE, body);
+  await writeOne(PUBLIC_FILE, body);
+}
+
+function sendJson(res, status, payload) {
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('cache-control', 'no-store');
+  res.end(JSON.stringify(payload));
 }
 
 export function publicadoPlugin() {
@@ -86,8 +122,12 @@ export function publicadoPlugin() {
     name: 'publicado-app',
     transformIndexHtml: {
       handler(html, ctx) {
-        if (!ctx.server) return html;
-        return sourceVersion().then((version) => html.replace('/src/main.jsx', `/src/main.jsx?v=${version}`));
+        let next = html;
+        if (ctx.server && publishToken) {
+          next = next.replace('</head>', `<meta name="publicar-local" content="${publishToken}" />\n</head>`);
+        }
+        if (!ctx.server) return next;
+        return sourceVersion().then((version) => next.replace('/src/main.jsx', `/src/main.jsx?v=${version}`));
       },
     },
     async closeBundle() {
@@ -109,17 +149,34 @@ export function publicadoPlugin() {
             .catch(() => next());
           return;
         }
+        if (localDesk && path === '/api/plano-local') {
+          if (req.method !== 'GET' || !isLoopback(req)) {
+            sendJson(res, 404, { rows: [] });
+            return;
+          }
+          readFile(PLAN_FILE, 'utf8')
+            .then((raw) => {
+              const data = JSON.parse(raw);
+              sendJson(res, 200, { rows: Array.isArray(data?.rows) ? data.rows : [] });
+            })
+            .catch((error) => {
+              if (error && error.code === 'ENOENT') {
+                sendJson(res, 200, { rows: [] });
+                return;
+              }
+              sendJson(res, 404, { rows: [] });
+            });
+          return;
+        }
         if (path !== '/api/publicar') return next();
         (async () => {
           if (req.method === 'GET') {
             const payload = await readPublished();
-            res.setHeader('content-type', 'application/json; charset=utf-8');
-            res.setHeader('cache-control', 'no-store');
-            res.end(JSON.stringify(payload));
+            sendJson(res, 200, payload);
             return;
           }
-          if (req.method !== 'POST') {
-            res.statusCode = 405;
+          if (req.method !== 'POST' || !localWriteAllowed(req)) {
+            res.statusCode = 404;
             res.end('');
             return;
           }
@@ -137,13 +194,10 @@ export function publicadoPlugin() {
             picagens: data.picagens,
           };
           await writeData(stored);
-          res.setHeader('content-type', 'application/json; charset=utf-8');
-          res.end(JSON.stringify({ published: true, at: stored.at, label: stored.label }));
+          sendJson(res, 200, { published: true, at: stored.at, label: stored.label });
         })().catch(() => {
           if (res.headersSent || res.writableEnded) return;
-          res.statusCode = 400;
-          res.setHeader('content-type', 'application/json; charset=utf-8');
-          res.end(JSON.stringify({ published: false, error: 'Não foi possível gravar a semana.' }));
+          sendJson(res, 400, { published: false, error: 'Não foi possível gravar a semana.' });
         });
       });
     },

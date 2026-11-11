@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "PUBLICAR_LOCAL=1 vite",
     "build": "vite build"
   },
   "dependencies": {

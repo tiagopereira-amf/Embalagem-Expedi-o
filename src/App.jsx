@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import planFile from './data/plan.json';
 import { AcumuladosView } from './components/AcumuladosView.jsx';
 import { DailyView } from './components/DailyView.jsx';
 import { HistoricoView } from './components/HistoricoView.jsx';
@@ -122,6 +121,9 @@ export function App() {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const publishingRef = useRef(false);
+  const desk = import.meta.env.DEV && !isPublishedPage();
+  const [includedRows, setIncludedRows] = useState([]);
+  const includedRef = useRef([]);
   const [slots, setSlots] = useState({ emb: emptySlot(), plan: emptySlot() });
   const slotsRef = useRef(slots);
   const pendingRef = useRef({ emb: false, plan: false });
@@ -148,7 +150,9 @@ export function App() {
     };
   }, [slots.emb]);
 
-  const planRows = slots.plan.status === 'ready' && slots.plan.rows?.length ? slots.plan.rows : planFile.rows;
+  const planRows = slots.plan.status === 'ready' && slots.plan.rows?.length
+    ? slots.plan.rows
+    : (desk ? includedRows : []);
   const picIndex = useMemo(() => indexPicagens(merged.rows), [merged.rows]);
   const model = useMemo(
     () => buildWeekModel({
@@ -362,7 +366,23 @@ export function App() {
   }
 
   useEffect(() => {
-    if (isPublishedPage()) return undefined;
+    if (!import.meta.env.DEV || isPublishedPage()) return undefined;
+    let cancel = false;
+    fetch('/api/plano-local', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : { rows: [] }))
+      .then((payload) => {
+        if (cancel || !Array.isArray(payload?.rows)) return;
+        includedRef.current = payload.rows;
+        setIncludedRows(payload.rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || isPublishedPage()) return undefined;
     let alive = true;
     (async () => {
       let saved;
@@ -480,10 +500,10 @@ export function App() {
       .then((payload) => {
         if (cancel || !payload?.published) return;
         setPublished({ at: payload.at, label: payload.label });
-        if (!isPublishedPage()) return;
+        if (import.meta.env.DEV && !isPublishedPage()) return;
         if (Number.isFinite(payload.year)) setYear(payload.year);
         if (Number.isFinite(payload.week)) setWeek(payload.week);
-        if (payload.planFromFile && payload.planRows?.length) {
+        if (payload.planRows?.length) {
           updateSlot('plan', {
             status: 'ready',
             name: 'Semana publicada',
@@ -541,7 +561,7 @@ export function App() {
         week,
         planFromFile: Boolean(planFromFile),
         hasPicagens,
-        planRows: planFromFile ? plan.rows : planFile.rows,
+        planRows: planFromFile ? plan.rows : includedRef.current,
         picagens: hasPicagens ? (emb.rows || []).map((row) => ({
           op: row.op,
           section: row.section,
@@ -617,50 +637,59 @@ export function App() {
             </button>
           ))}
         </nav>
-        <div className="side-files">
-          <Picker slot="emb" label="Ficheiro embalamento/expedição" hint="folha BD, com as duas secções" state={slots.emb} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('emb')} />
-          <Picker slot="plan" label="Ficheiro SHIPDATE" hint="folha SHIPDATE, substitui o plano incluído" state={slots.plan} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('plan')} />
-        </div>
+        {desk ? (
+          <div className="side-files">
+            <Picker slot="emb" label="Ficheiro embalamento/expedição" hint="folha BD, com as duas secções" state={slots.emb} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('emb')} />
+            <Picker slot="plan" label="Ficheiro SHIPDATE" hint="folha SHIPDATE, substitui o plano incluído" state={slots.plan} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('plan')} />
+          </div>
+        ) : null}
       </aside>
 
       <div className="main">
-      {isPublishedPage() ? (
-        <p className="banner">Já embalado = E − GR. O balão chama-se «Embalado esta semana (plano)».{published?.label ? ` Actualizado ${published.label}.` : ''}</p>
-      ) : null}
       <header className="topbar">
         <time dateTime={today}>{formatHeading(today)}</time>
         <div className="topbar-actions">
-          <div className="publish">
-            <button type="button" data-testid="publicar" onClick={onPublish} disabled={publishing}>
-              {publishing ? 'A publicar…' : 'Publicar'}
-            </button>
-            <a className="publish-link" href="/publicado.html" data-testid="link-publicado">Abrir a cópia publicada</a>
-            <span className="publish-hint">Publicar grava esta semana na página publicada.</span>
-            {published ? (
-              <time dateTime={published.at} data-testid="publicado-em">{published.label}</time>
-            ) : null}
-            {publishError ? <span className="publish-error" role="alert">{publishError}</span> : null}
-          </div>
+          {desk ? (
+            <div className="publish">
+              <button type="button" data-testid="publicar" onClick={onPublish} disabled={publishing}>
+                {publishing ? 'A publicar…' : 'Publicar'}
+              </button>
+              <a className="publish-link" href="/publicado.html" data-testid="link-publicado">Abrir a cópia publicada</a>
+              <span className="publish-hint">Publicar grava esta semana na página publicada.</span>
+              {published ? (
+                <time dateTime={published.at} data-testid="publicado-em">{published.label}</time>
+              ) : null}
+              {publishError ? <span className="publish-error" role="alert">{publishError}</span> : null}
+            </div>
+          ) : published ? (
+            <time dateTime={published.at} data-testid="publicado-em">{published.label}</time>
+          ) : null}
           <span className="chip" data-metric="ops" data-value={String(model.planTotals.ops)}>{chip}</span>
         </div>
       </header>
 
-      {slots.emb.error || slots.plan.error ? (
+      {!desk ? (
+        <p className="banner">
+          Consulta da semana publicada. Já embalado = E − GR. O balão chama-se «Embalado esta semana (plano)».
+          {published?.label ? ` Actualizado ${published.label}.` : ' Ainda não há semana publicada.'}
+        </p>
+      ) : null}
+      {desk && (slots.emb.error || slots.plan.error) ? (
         <p className="banner danger" role="alert">{slots.emb.error || slots.plan.error}</p>
       ) : null}
-      {(slots.emb.restoring || slots.plan.restoring) && !merged.hasPicagens ? (
+      {desk && ((slots.emb.restoring || slots.plan.restoring) && !merged.hasPicagens) ? (
         <p className="banner" data-testid="repor-ficheiro">A repor o ficheiro</p>
-      ) : restoreNote(slots) && !(slots.emb.error || slots.plan.error) ? (
+      ) : desk && restoreNote(slots) && !(slots.emb.error || slots.plan.error) ? (
         <p className="banner" data-testid="copia-guardada">{restoreNote(slots)}</p>
-      ) : !merged.hasPicagens ? (
+      ) : desk && !merged.hasPicagens ? (
         <p className="banner">
           O plano já está visível. Para o realizado, escolha um .xlsx ou .xlsm com a folha BD. Se tiver EMB.Embalagem e EMB.Expedicao, basta um ficheiro.
         </p>
-      ) : (
+      ) : merged.hasPicagens ? (
         <p className="banner ready">
           Picagens carregadas: {merged.embLines.toLocaleString('pt-PT')} linhas de embalagem e {merged.expLines.toLocaleString('pt-PT')} de expedição.
         </p>
-      )}
+      ) : null}
 
       <div
         data-snapshot={tab === 'semana' ? 'semana' : undefined}
@@ -733,6 +762,7 @@ export function App() {
           onSave={gravarSemana}
           note={histNote}
           weekKey={model.key}
+          editable={desk}
         />
       ) : null}
       </div>

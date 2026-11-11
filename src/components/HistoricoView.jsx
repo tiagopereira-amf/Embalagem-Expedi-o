@@ -1,4 +1,4 @@
-export function HistoricoView({ rows, onChange, onDelete, onSave, note, weekKey }) {
+export function HistoricoView({ rows, onChange, onDelete, onSave, note, weekKey, editable = true }) {
   const sorted = [...rows].sort((a, b) => b.semana.localeCompare(a.semana, 'pt'));
   return (
     <section className="view">
@@ -7,9 +7,11 @@ export function HistoricoView({ rows, onChange, onDelete, onSave, note, weekKey 
           <strong>Histórico editável</strong>
           <span>Uma linha por semana ISO, gravada neste browser.</span>
         </p>
-        <button type="button" className="primary" onClick={onSave} data-testid="gravar-semana">
-          Gravar semana
-        </button>
+        {editable ? (
+          <button type="button" className="primary" onClick={onSave} data-testid="gravar-semana">
+            Gravar semana
+          </button>
+        ) : null}
       </div>
       <p className="formula">
         Cumprimento = min(100, realizado ÷ objetivo × 100). O objetivo de embalagem e de expedição é o Obs quando está preenchido e, se está vazio, Quant menos GR, nunca abaixo de 0.
@@ -35,7 +37,9 @@ export function HistoricoView({ rows, onChange, onDelete, onSave, note, weekKey 
             {sorted.length === 0 ? (
               <tr>
                 <td colSpan={6} className="chart-empty">
-                  Ainda não há linhas. Use Gravar semana para abrir a semana selecionada, ou edite depois cada célula.
+                  {editable
+                    ? 'Ainda não há linhas. Use Gravar semana para abrir a semana selecionada, ou edite depois cada célula.'
+                    : 'A consulta não grava histórico.'}
                 </td>
               </tr>
             ) : (
@@ -46,14 +50,17 @@ export function HistoricoView({ rows, onChange, onDelete, onSave, note, weekKey 
                       <input
                         value={row[field]}
                         aria-label={`${field} ${row.semana}`}
-                        onChange={(event) => onChange(row.id, field, event.target.value)}
+                        readOnly={!editable}
+                        onChange={editable ? (event) => onChange(row.id, field, event.target.value) : undefined}
                       />
                     </td>
                   ))}
                   <td>
-                    <button type="button" className="ghost" onClick={() => onDelete(row.id)}>
-                      Apagar
-                    </button>
+                    {editable ? (
+                      <button type="button" className="ghost" onClick={() => onDelete(row.id)}>
+                        Apagar
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))
