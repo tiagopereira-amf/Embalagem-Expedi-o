@@ -12,8 +12,10 @@ Este zip é o último. Não há outro pacote para descarregar.
    Abre a aplicação, com as fórmulas actuais. Já embalado = max(0, E − GR).
    O balão chama-se «Embalado esta semana (plano)».
    As próximas alterações de código aparecem ao refrescar esse endereço.
-5. No ecrã principal (http://127.0.0.1:5173/) escolha a folha BD e o SHIPDATE.
-   Os ficheiros ficam neste browser entre refreshes.
+5. No ecrã principal (http://127.0.0.1:5173/) indique o caminho do ficheiro
+   da folha BD e escolha o SHIPDATE. Cada vez que a página é atualizada,
+   o Excel abre esse ficheiro neste computador, grava os dados mais recentes
+   e só então a página o lê.
    Publicar grava essa semana no endereço estável. Quem o abre vê essa
    actualização, já calculada com as fórmulas da aplicação.
 

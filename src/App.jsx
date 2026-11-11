@@ -4,6 +4,7 @@ import { DailyView } from './components/DailyView.jsx';
 import { HistoricoView } from './components/HistoricoView.jsx';
 import { WeekView } from './components/WeekView.jsx';
 import { formatDateLong, formatPctInput, isoWeekParts, latestWeekOf, lisbonTodayISO, shiftWeek } from './lib/dates.js';
+import { rememberedBdPath, refreshBdFile, saveBdPath } from './lib/bdLocal.js';
 import { isPublishedPage, loadPublished, savePublished } from './lib/publicar.js';
 import { buildWeekModel, indexPicagens } from './lib/metrics.js';
 import { clearPicagemFile, loadPicagemFiles, loadHistorico, loadThreshold, saveHistorico, savePicagemFile, saveThreshold } from './lib/storage.js';
@@ -123,6 +124,7 @@ export function App() {
   const publishingRef = useRef(false);
   const desk = import.meta.env.DEV && !isPublishedPage();
   const [includedRows, setIncludedRows] = useState([]);
+  const [bdPathDraft, setBdPathDraft] = useState(() => rememberedBdPath());
   const includedRef = useRef([]);
   const [slots, setSlots] = useState({ emb: emptySlot(), plan: emptySlot() });
   const slotsRef = useRef(slots);
@@ -305,6 +307,49 @@ export function App() {
 
   onFileRef.current = onFile;
 
+  function markBdUpdating(path) {
+    updateSlot('emb', {
+      status: 'reading',
+      name: String(path || '').split(/[/\\]/).pop(),
+      phase: 'A atualizar o ficheiro BD no computador',
+      pct: 8,
+      error: '',
+      rows: [],
+      stats: null,
+      hash: '',
+      restoring: true,
+      note: '',
+    });
+  }
+
+  async function loadFreshBd(path) {
+    const saved = await saveBdPath(path);
+    setBdPathDraft(saved);
+    const file = await refreshBdFile();
+    await onFileRef.current('emb', file, { persist: true, note: '' });
+  }
+
+  async function onSaveBdPath() {
+    const path = bdPathDraft.trim();
+    if (!path) return;
+    markBdUpdating(path);
+    try {
+      await loadFreshBd(path);
+    } catch (error) {
+      updateSlot('emb', {
+        status: 'error',
+        name: path.split(/[/\\]/).pop(),
+        phase: '',
+        pct: 0,
+        error: error?.message || 'Não foi possível atualizar o ficheiro BD.',
+        rows: [],
+        stats: null,
+        restoring: false,
+        note: '',
+      });
+    }
+  }
+
   async function pickDisk(key) {
     if (!diskPickerAvailable()) return;
     let handle;
@@ -329,6 +374,26 @@ export function App() {
   async function refreshFromDisk(only) {
     const keys = ['emb', 'plan'].filter((key) => key === only && (slots[key].disk || diskHandles.current[key]));
     for (const key of keys) {
+      if (key === 'emb' && rememberedBdPath()) {
+        const path = rememberedBdPath();
+        markBdUpdating(path);
+        try {
+          await loadFreshBd(path);
+        } catch (error) {
+          updateSlot('emb', {
+            status: 'error',
+            name: path.split(/[/\\]/).pop(),
+            phase: '',
+            pct: 0,
+            error: error?.message || 'Não foi possível atualizar o ficheiro BD.',
+            rows: [],
+            stats: null,
+            restoring: false,
+            note: '',
+          });
+        }
+        continue;
+      }
       const handle = diskHandles.current[key];
       const usable = handle && typeof handle.requestPermission === 'function' && typeof handle.getFile === 'function';
       if (!usable) {
@@ -385,15 +450,17 @@ export function App() {
     if (!import.meta.env.DEV || isPublishedPage()) return undefined;
     let alive = true;
     (async () => {
-      let saved;
+      let saved = {};
       try {
         saved = await loadPicagemFiles();
       } catch {
-        return;
+        saved = {};
       }
       if (!alive) return;
+      const bdPath = rememberedBdPath().trim();
       const pending = [];
       for (const key of ['emb', 'plan']) {
+        if (key === 'emb' && bdPath) continue;
         const record = saved[key];
         if (!record || (record.bytes == null && record.handle == null)) continue;
         updateSlot(key, {
@@ -410,27 +477,52 @@ export function App() {
         });
         pending.push([key, record]);
       }
-      if (!pending.length || !alive) return;
+      if (!pending.length && !bdPath) return;
       await new Promise((resolve) => {
         requestAnimationFrame(() => setTimeout(resolve, 0));
       });
       if (!alive) return;
-      for (const [key, record] of pending) {
-        if (!alive) return;
-        const seen = parseToken.current[key];
-        diskHandles.current[key] = record.handle || null;
-        const chosen = fileForRestore(record);
-        if (!alive || parseToken.current[key] !== seen) continue;
-        if (!chosen?.file) {
-          updateSlot(key, {
-            ...emptySlot(),
-            name: record.name || '',
-            disk: chosen?.disk || false,
-          });
-          continue;
-        }
-        await onFileRef.current(key, chosen.file, { persist: false, note: chosen.note, disk: chosen.disk });
+      const jobs = [];
+      if (bdPath) {
+        markBdUpdating(bdPath);
+        jobs.push((async () => {
+          try {
+            await loadFreshBd(bdPath);
+          } catch (error) {
+            if (!alive) return;
+            updateSlot('emb', {
+              status: 'error',
+              name: bdPath.split(/[/\\]/).pop(),
+              phase: '',
+              pct: 0,
+              error: error?.message || 'Não foi possível atualizar o ficheiro BD.',
+              rows: [],
+              stats: null,
+              restoring: false,
+              note: '',
+            });
+          }
+        })());
       }
+      for (const [key, record] of pending) {
+        jobs.push((async () => {
+          if (!alive) return;
+          const seen = parseToken.current[key];
+          diskHandles.current[key] = record.handle || null;
+          const chosen = fileForRestore(record);
+          if (!alive || parseToken.current[key] !== seen) return;
+          if (!chosen?.file) {
+            updateSlot(key, {
+              ...emptySlot(),
+              name: record.name || '',
+              disk: chosen?.disk || false,
+            });
+            return;
+          }
+          await onFileRef.current(key, chosen.file, { persist: false, note: chosen.note, disk: chosen.disk });
+        })());
+      }
+      await Promise.all(jobs);
     })();
     return () => {
       alive = false;
@@ -639,7 +731,7 @@ export function App() {
         </nav>
         {desk ? (
           <div className="side-files">
-            <Picker slot="emb" label="Ficheiro embalamento/expedição" hint="folha BD, com as duas secções" state={slots.emb} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('emb')} />
+            <Picker slot="emb" label="Ficheiro embalamento/expedição" hint="Ao atualizar o browser, o Excel abre este ficheiro, grava os dados novos e só depois a página o lê." state={slots.emb} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('emb')} bdPath={bdPathDraft} onBdPath={setBdPathDraft} onSaveBdPath={onSaveBdPath} />
             <Picker slot="plan" label="Ficheiro SHIPDATE" hint="folha SHIPDATE, substitui o plano incluído" state={slots.plan} onFile={onFile} onPick={pickDisk} onRefresh={refreshFromDisk} onClear={() => clearSlot('plan')} />
           </div>
         ) : null}
@@ -770,7 +862,7 @@ export function App() {
   );
 }
 
-function Picker({ slot, label, hint, state, onFile, onPick, onRefresh, onClear }) {
+function Picker({ slot, label, hint, state, onFile, onPick, onRefresh, onClear, bdPath, onBdPath, onSaveBdPath }) {
   const disk = diskPickerAvailable();
   return (
     <div className={`picker ${state.status}`} data-status={state.status} data-phase={state.phase || ''}>
@@ -795,6 +887,22 @@ function Picker({ slot, label, hint, state, onFile, onPick, onRefresh, onClear }
         </label>
       )}
       <small>{hint}</small>
+      {slot === 'emb' ? (
+        <label className="bd-path">
+          Caminho neste computador
+          <input
+            type="text"
+            value={bdPath}
+            data-testid="caminho-bd"
+            spellCheck="false"
+            placeholder="C:\Dados\folha-bd.xlsx"
+            onChange={(event) => onBdPath(event.target.value)}
+          />
+          <button type="button" className="ghost" data-testid="guardar-caminho-bd" onClick={onSaveBdPath}>
+            Guardar caminho
+          </button>
+        </label>
+      ) : null}
       {state.name ? <strong className="file-name" data-testid={`nome-${slot}`}>{state.name}</strong> : <em className="file-none">Nenhum ficheiro escolhido</em>}
       {state.status === 'reading' || state.status === 'parsing' ? (
         <span className="progress" aria-live="polite">
