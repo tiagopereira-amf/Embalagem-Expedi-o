@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, isAbsolute, join, normalize } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -125,13 +125,22 @@ function excelMessage(raw) {
   return 'Não foi possível abrir e atualizar o ficheiro BD no Excel.';
 }
 
+function windowsPath(text) {
+  return /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\');
+}
+
+function bdBasename(filePath) {
+  return windowsPath(filePath) ? win32.basename(filePath) : basename(filePath);
+}
+
 function assertBdPath(input) {
   const text = String(input || '').trim();
   if (!text || /[\0\r\n]/.test(text)) throw new Error('Indique o caminho completo do ficheiro BD.');
-  const ext = extname(text).toLowerCase();
+  const api = windowsPath(text) ? win32 : { extname, isAbsolute, normalize, basename };
+  const ext = api.extname(text).toLowerCase();
   if (ext !== '.xlsx' && ext !== '.xlsm') throw new Error('O ficheiro BD tem de ser .xlsx ou .xlsm.');
-  if (!isAbsolute(text)) throw new Error('Use o caminho completo, por exemplo C:\\Dados\\picagens.xlsx.');
-  return normalize(text);
+  if (!api.isAbsolute(text)) throw new Error('Use o caminho completo, por exemplo C:\\Dados\\picagens.xlsx.');
+  return api.normalize(text);
 }
 
 async function readLocalConfig() {
@@ -152,23 +161,27 @@ async function savedBdPath() {
 
 async function saveBdPath(input) {
   const filePath = assertBdPath(input);
-  let info;
-  try {
-    info = await stat(filePath);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') throw new Error('Não encontrei o ficheiro BD nesse caminho.');
-    throw new Error('Não foi possível abrir o ficheiro BD nesse caminho.');
+  const onThisComputer = process.platform === 'win32' || !windowsPath(filePath);
+  if (onThisComputer) {
+    let info;
+    try {
+      info = await stat(filePath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') throw new Error('Não encontrei o ficheiro BD nesse caminho.');
+      throw new Error('Não foi possível abrir o ficheiro BD nesse caminho.');
+    }
+    if (!info.isFile()) throw new Error('O caminho do ficheiro BD não é um ficheiro.');
   }
-  if (!info.isFile()) throw new Error('O caminho do ficheiro BD não é um ficheiro.');
   const config = await readLocalConfig();
   config.emb = filePath;
   await writeOne(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`);
-  return { path: filePath, name: basename(filePath) };
+  const name = bdBasename(filePath);
+  return { path: filePath, name };
 }
 
 function refreshWithExcel(filePath) {
   if (process.platform !== 'win32') {
-    return Promise.reject(new Error('A atualização do ficheiro BD em segundo plano usa o Excel e só corre no Windows.'));
+    return Promise.reject(new Error('O caminho está completo. O Excel só consegue abrir este ficheiro no computador Windows onde ele está.'));
   }
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', [
@@ -206,13 +219,13 @@ function refreshSavedBd() {
     if (!filePath) throw new Error('Indique o caminho do ficheiro BD neste computador.');
     await refreshWithExcel(filePath);
     const info = await stat(filePath);
-    return { ok: true, path: filePath, name: basename(filePath), size: info.size, mtimeMs: info.mtimeMs };
+    return { ok: true, path: filePath, name: bdBasename(filePath), size: info.size, mtimeMs: info.mtimeMs };
   }, async () => {
     const filePath = await savedBdPath();
     if (!filePath) throw new Error('Indique o caminho do ficheiro BD neste computador.');
     await refreshWithExcel(filePath);
     const info = await stat(filePath);
-    return { ok: true, path: filePath, name: basename(filePath), size: info.size, mtimeMs: info.mtimeMs };
+    return { ok: true, path: filePath, name: bdBasename(filePath), size: info.size, mtimeMs: info.mtimeMs };
   });
   bdRefresh = run.then(() => undefined, () => undefined);
   return run;
