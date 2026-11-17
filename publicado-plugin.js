@@ -244,6 +244,10 @@ function sendFile(res, filePath) {
 }
 
 async function handleBd(req, res, path) {
+  if (path === '/api/ficheiro-bd/estado' && req.method === 'GET') {
+    sendJson(res, 200, { excel: process.platform === 'win32' });
+    return;
+  }
   if (path === '/api/ficheiro-bd' && req.method === 'PUT') {
     const body = JSON.parse(await readBody(req, 8000));
     const saved = await saveBdPath(body?.path);
@@ -323,7 +327,7 @@ export function publicadoPlugin() {
             });
           return;
         }
-        if (localDesk && (path === '/api/ficheiro-bd' || path === '/api/ficheiro-bd/atualizar')) {
+        if (localDesk && (path === '/api/ficheiro-bd' || path === '/api/ficheiro-bd/estado' || path === '/api/ficheiro-bd/atualizar')) {
           if (!localWriteAllowed(req)) {
             res.statusCode = 404;
             res.end('');

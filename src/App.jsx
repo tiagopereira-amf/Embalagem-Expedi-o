@@ -4,7 +4,7 @@ import { DailyView } from './components/DailyView.jsx';
 import { HistoricoView } from './components/HistoricoView.jsx';
 import { WeekView } from './components/WeekView.jsx';
 import { formatDateLong, formatPctInput, isoWeekParts, latestWeekOf, lisbonTodayISO, shiftWeek } from './lib/dates.js';
-import { rememberedBdPath, refreshBdFile, saveBdPath } from './lib/bdLocal.js';
+import { bdExcelHere, rememberedBdPath, refreshBdFile, saveBdPath } from './lib/bdLocal.js';
 import { isPublishedPage, loadPublished, savePublished } from './lib/publicar.js';
 import { buildWeekModel, indexPicagens } from './lib/metrics.js';
 import { clearPicagemFile, loadPicagemFiles, loadHistorico, loadThreshold, saveHistorico, savePicagemFile, saveThreshold } from './lib/storage.js';
@@ -332,6 +332,22 @@ export function App() {
   async function onSaveBdPath() {
     const path = bdPathDraft.trim();
     if (!path) return;
+    if (!(await bdExcelHere())) {
+      try {
+        const saved = await saveBdPath(path);
+        setBdPathDraft(saved);
+      } catch (error) {
+        updateSlot('emb', {
+          status: 'error',
+          name: path.split(/[/\\]/).pop(),
+          phase: '',
+          pct: 0,
+          error: error?.message || 'Não foi possível guardar o caminho do ficheiro BD.',
+          restoring: false,
+        });
+      }
+      return;
+    }
     markBdUpdating(path);
     try {
       await loadFreshBd(path);
@@ -374,7 +390,7 @@ export function App() {
   async function refreshFromDisk(only) {
     const keys = ['emb', 'plan'].filter((key) => key === only && (slots[key].disk || diskHandles.current[key]));
     for (const key of keys) {
-      if (key === 'emb' && rememberedBdPath()) {
+      if (key === 'emb' && rememberedBdPath() && await bdExcelHere()) {
         const path = rememberedBdPath();
         markBdUpdating(path);
         try {
@@ -458,9 +474,10 @@ export function App() {
       }
       if (!alive) return;
       const bdPath = rememberedBdPath().trim();
+      const refreshBd = bdPath ? await bdExcelHere() : false;
       const pending = [];
       for (const key of ['emb', 'plan']) {
-        if (key === 'emb' && bdPath) continue;
+        if (key === 'emb' && refreshBd) continue;
         const record = saved[key];
         if (!record || (record.bytes == null && record.handle == null)) continue;
         updateSlot(key, {
@@ -477,13 +494,13 @@ export function App() {
         });
         pending.push([key, record]);
       }
-      if (!pending.length && !bdPath) return;
+      if (!pending.length && !refreshBd) return;
       await new Promise((resolve) => {
         requestAnimationFrame(() => setTimeout(resolve, 0));
       });
       if (!alive) return;
       const jobs = [];
-      if (bdPath) {
+      if (refreshBd) {
         markBdUpdating(bdPath);
         jobs.push((async () => {
           try {

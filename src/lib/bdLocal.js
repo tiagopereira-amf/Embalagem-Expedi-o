@@ -36,6 +36,16 @@ function rememberBdPath(path) {
   }
 }
 
+export async function bdExcelHere() {
+  const response = await fetch('/api/ficheiro-bd/estado', {
+    cache: 'no-store',
+    headers: localHeaders(false),
+  });
+  if (!response.ok) return false;
+  const payload = await response.json().catch(() => ({}));
+  return Boolean(payload.excel);
+}
+
 export async function saveBdPath(path) {
   const response = await fetch('/api/ficheiro-bd', {
     method: 'PUT',
