@@ -12,12 +12,19 @@ function localHeaders(json) {
   return headers;
 }
 
+function defaultBdPath() {
+  if (!import.meta.env.DEV) return '';
+  return 'C:\\Users\\tiagopereira\\OneDrive - AMF Shoes, lda\\Ambiente de Trabalho\\Expedição_Embalagem_2026_light.xlsm';
+}
+
 export function rememberedBdPath() {
   try {
-    return localStorage.getItem(PATH_KEY) || '';
+    const saved = localStorage.getItem(PATH_KEY);
+    if (saved) return saved;
   } catch {
-    return '';
+    /* segue o caminho por omissão */
   }
+  return defaultBdPath();
 }
 
 function rememberBdPath(path) {
