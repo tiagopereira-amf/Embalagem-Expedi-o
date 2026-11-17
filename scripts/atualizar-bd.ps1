@@ -11,7 +11,9 @@ try {
   $excel.DisplayAlerts = $false
   $excel.AskToUpdateLinks = $false
   $excel.ScreenUpdating = $false
-  $excel.EnableEvents = $false
+  # 1 = permitir macros deste livro; sem isto o Excel automático não corre a atualização ao abrir
+  $excel.AutomationSecurity = 1
+  $excel.EnableEvents = $true
   # 3 = atualizar ligações sem perguntar; o terceiro argumento é ReadOnly = false
   $wb = $excel.Workbooks.Open($path, 3, $false)
   $wb.RefreshAll() | Out-Null
