@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { formatDateShort, formatPairs, formatPct, weekdayShort } from '../lib/dates.js';
 import { GroupedBar, LineChart, dayLabels } from './Charts.jsx';
 import { Metric } from './Metric.jsx';
@@ -12,25 +13,100 @@ function fold(value) {
 }
 
 const DETAIL_COLUMNS = [
-  { key: 'op', label: 'OP', filter: 'text' },
-  { key: 'cliente', label: 'Cliente', filter: 'text' },
-  { key: 'ref', label: 'Ref.', filter: 'text' },
-  { key: 'marca', label: 'Marca', filter: 'select' },
-  { key: 'codFab', label: 'Cód. fab.', filter: 'select' },
-  { key: 'linhaProd', label: 'Linha', filter: 'select' },
-  { key: 'shipDate', label: 'Ship date', filter: 'select' },
-  { key: 'quant', label: 'Quant.', filter: 'text' },
-  { key: 'obs', label: 'Obs', filter: 'text' },
-  { key: 'gr', label: 'GR', filter: 'text', title: 'Pares já expedidos antes' },
-  { key: 'e', label: 'E', filter: 'text', title: 'Pares embalados agora' },
-  { key: 'embalado', label: 'Já embalado', filter: 'text', title: 'Já embalado = E − GR' },
-  { key: 'porEmbalar', label: 'Por embalar', filter: 'text' },
-  { key: 'expedido', label: 'Expedido', filter: 'text' },
-  { key: 'faltaExpedir', label: 'Falta expedir', filter: 'text', title: 'max(0, objetivo de expedição − picagens EMB.Expedicao). Não entra o GR nem a coluna E' },
-  { key: 'faltaEmbalar', label: 'Falta embalar', filter: 'text', title: 'Objetivo menos as picagens EMB.Embalagem desta semana menos o já embalado, nunca abaixo de 0' },
-  { key: 'picEmb', label: 'Pic. emb.', filter: 'text' },
-  { key: 'picExp', label: 'Pic. exp.', filter: 'text' },
+  { key: 'op', label: 'OP' },
+  { key: 'cliente', label: 'Cliente' },
+  { key: 'ref', label: 'Ref.' },
+  { key: 'marca', label: 'Marca' },
+  { key: 'codFab', label: 'Cód. fab.' },
+  { key: 'linhaProd', label: 'Linha' },
+  { key: 'shipDate', label: 'Ship date' },
+  { key: 'quant', label: 'Quant.' },
+  { key: 'obs', label: 'Obs' },
+  { key: 'gr', label: 'GR', title: 'Pares já expedidos antes' },
+  { key: 'e', label: 'E', title: 'Pares embalados agora' },
+  { key: 'embalado', label: 'Já embalado', title: 'Já embalado = E − GR' },
+  { key: 'porEmbalar', label: 'Por embalar' },
+  { key: 'expedido', label: 'Expedido' },
+  { key: 'faltaExpedir', label: 'Falta expedir', title: 'max(0, objetivo de expedição − picagens EMB.Expedicao). Não entra o GR nem a coluna E' },
+  { key: 'faltaEmbalar', label: 'Falta embalar', title: 'Objetivo menos as picagens EMB.Embalagem desta semana menos o já embalado, nunca abaixo de 0' },
+  { key: 'picEmb', label: 'Pic. emb.' },
+  { key: 'picExp', label: 'Pic. exp.' },
 ];
+
+const BLANK_LABEL = '(em branco)';
+const NUMBER_KEYS = new Set([
+  'quant', 'obs', 'gr', 'e', 'embalado', 'porEmbalar', 'expedido',
+  'faltaExpedir', 'faltaEmbalar', 'picEmb', 'picExp',
+]);
+
+function displayFilterValue(key, raw) {
+  if (raw === '') return BLANK_LABEL;
+  if (key === 'shipDate') return formatDateShort(raw);
+  if (NUMBER_KEYS.has(key)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+      if (key === 'picEmb' || key === 'picExp') return formatPairs(n);
+      return new Intl.NumberFormat('pt-PT', { maximumFractionDigits: 1 }).format(n);
+    }
+  }
+  return raw;
+}
+
+function compareFilterValues(key, a, b) {
+  if (a === '' && b === '') return 0;
+  if (a === '') return 1;
+  if (b === '') return -1;
+  if (NUMBER_KEYS.has(key)) {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  }
+  return a.localeCompare(b, 'pt', { numeric: true, sensitivity: 'base' });
+}
+
+function passesColumnFilters(text, filters, exceptKey) {
+  for (const column of DETAIL_COLUMNS) {
+    if (column.key === exceptKey) continue;
+    const allowed = filters[column.key];
+    if (!allowed) continue;
+    if (!allowed.has(text[column.key])) return false;
+  }
+  return true;
+}
+
+function coversAll(selected, universe) {
+  if (selected.size < universe.size) return false;
+  for (const value of universe) {
+    if (!selected.has(value)) return false;
+  }
+  return true;
+}
+
+function filterChoices(items, filters, key) {
+  const natural = new Set();
+  for (const item of items) {
+    if (!passesColumnFilters(item.text, filters, key)) continue;
+    natural.add(item.text[key]);
+  }
+  const values = new Set(natural);
+  const allowed = filters[key];
+  if (allowed) {
+    for (const value of allowed) values.add(value);
+  }
+  return {
+    values: [...values].sort((a, b) => compareFilterValues(key, a, b)),
+    natural,
+  };
+}
+
+function matchesFilterQuery(key, raw, query) {
+  const q = fold(query.trim());
+  if (!q) return true;
+  const label = fold(displayFilterValue(key, raw));
+  if (label.includes(q)) return true;
+  const compact = (value) => value.replace(/[\s\u00a0\u202f]/g, '');
+  return compact(label).includes(compact(q));
+}
 
 function fieldText(row, key, picEmb, picExp) {
   if (key === 'picEmb') return picEmb == null ? '' : String(picEmb);
@@ -270,49 +346,251 @@ function SectionBlock({ title, tone, card, figures, extra }) {
   );
 }
 
+function readFilterPosition(button) {
+  const rect = button.getBoundingClientRect();
+  const width = Math.min(280, window.innerWidth - 16);
+  let left = rect.left;
+  if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+  const spaceBelow = window.innerHeight - rect.bottom - 12;
+  const spaceAbove = rect.top - 12;
+  const openUp = spaceBelow < 220 && spaceAbove > spaceBelow;
+  const room = Math.max(160, openUp ? spaceAbove : spaceBelow);
+  const listMax = Math.max(96, Math.min(240, room - 118));
+  if (openUp) return { left, width, top: 'auto', bottom: window.innerHeight - rect.top + 4, listMax };
+  return { left, width, top: rect.bottom + 4, bottom: 'auto', listMax };
+}
+
+function FilterIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path d="M1.5 2.5h13l-5 6.1V13l-3 1.1V8.6l-5-6.1z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function ColumnFilter({ column, allowed, choice, universe, onChange }) {
+  const listed = choice.values;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const popRef = useRef(null);
+  const allRef = useRef(null);
+  const searchRef = useRef(null);
+  const active = Boolean(allowed);
+  const visible = listed.filter((value) => matchesFilterQuery(column.key, value, query));
+  const isChecked = (value) => !allowed || allowed.has(value);
+  const selectedCount = allowed ? listed.filter((value) => allowed.has(value)).length : listed.length;
+  const allChecked = visible.length > 0 && visible.every(isChecked);
+  const someChecked = visible.some(isChecked);
+  const noneSelected = Boolean(allowed) && allowed.size === 0;
+
+  function commit(next) {
+    onChange(coversAll(next, universe) ? null : next);
+  }
+
+  function materialize() {
+    return allowed ? new Set(allowed) : new Set(listed);
+  }
+
+  function onToggle(value) {
+    const next = materialize();
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    commit(next);
+  }
+
+  function onToggleAll() {
+    if (!visible.length) return;
+    const next = materialize();
+    if (allChecked) {
+      for (const value of visible) next.delete(value);
+    } else {
+      for (const value of visible) next.add(value);
+    }
+    commit(next);
+  }
+
+  function place() {
+    if (!btnRef.current) return;
+    const next = readFilterPosition(btnRef.current);
+    setPos((current) => {
+      if (
+        current
+        && current.left === next.left
+        && current.top === next.top
+        && current.bottom === next.bottom
+        && current.width === next.width
+        && current.listMax === next.listMax
+      ) return current;
+      return next;
+    });
+  }
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    place();
+    searchRef.current?.focus({ preventScroll: true });
+    const onScroll = () => place();
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onPointer = (event) => {
+      const target = event.target;
+      if (btnRef.current?.contains(target) || popRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = someChecked && !allChecked;
+  }, [someChecked, allChecked, open]);
+
+  function toggleOpen() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    if (btnRef.current) setPos(readFilterPosition(btnRef.current));
+    setQuery('');
+    setOpen(true);
+  }
+
+  return (
+    <div className="col-filter">
+      <button
+        type="button"
+        ref={btnRef}
+        className={active ? 'col-filter-btn is-on' : 'col-filter-btn'}
+        aria-label={active ? `Filtrar ${column.label}. Filtro ativo.` : `Filtrar ${column.label}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={active ? 'Filtro ativo' : `Filtrar ${column.label}`}
+        data-testid={`filtro-${column.key}`}
+        data-active={active ? 'true' : 'false'}
+        onClick={toggleOpen}
+      >
+        <FilterIcon />
+      </button>
+      {open && pos ? createPortal(
+        <div
+          ref={popRef}
+          className="col-filter-pop"
+          role="dialog"
+          aria-label={`Filtrar ${column.label}`}
+          data-filter-pop={column.key}
+          style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
+        >
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            placeholder="Procurar"
+            aria-label={`Procurar em ${column.label}`}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="col-filter-actions">
+            <label>
+              <input
+                ref={allRef}
+                type="checkbox"
+                checked={allChecked}
+                disabled={visible.length === 0}
+                onChange={onToggleAll}
+              />
+              Selecionar tudo
+            </label>
+            <button type="button" onClick={() => onChange(new Set())} disabled={noneSelected}>
+              Limpar
+            </button>
+          </div>
+          <p className="col-filter-meta">
+            {listed.length === 0 ? 'Sem valores' : `${selectedCount} de ${listed.length}`}
+          </p>
+          <div className="col-filter-list" style={{ maxHeight: pos.listMax }}>
+            {visible.length === 0 ? (
+              <p className="col-filter-empty">Nenhum valor</p>
+            ) : visible.map((value) => {
+              const orphan = Boolean(allowed?.has(value)) && !choice.natural.has(value);
+              const label = displayFilterValue(column.key, value);
+              return (
+                <label key={`v:${value}`} className={orphan ? 'is-kept' : undefined} title={orphan ? 'Já não há linhas com este valor nos outros filtros. Continua selecionado.' : label}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked(value)}
+                    data-value={value}
+                    onChange={() => onToggle(value)}
+                  />
+                  <span>{label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>,
+        document.body,
+      ) : null}
+    </div>
+  );
+}
+
 export function WeekView({ model, threshold, query, setQuery, today }) {
   const { planTotals: totals, emb, exp, inWeek } = model;
   const labels = dayLabels(model.range.days);
   const brands = model.breakdown.brands;
   const tipos = model.breakdown.tipos;
   const [colFilters, setColFilters] = useState({});
+  const activeWeek = model.key;
+  const [filtersWeek, setFiltersWeek] = useState(activeWeek);
+  if (filtersWeek !== activeWeek) {
+    setFiltersWeek(activeWeek);
+    setColFilters({});
+  }
   const needle = fold(query.trim());
-  const rows = [...inWeek].sort((a, b) => a.shipDate.localeCompare(b.shipDate) || Number(a.op) - Number(b.op));
-  const searched = needle
-    ? rows.filter((row) => fold([row.op, row.cliente, row.ref, row.marca, row.codFab].join(' ')).includes(needle))
-    : rows;
-  const selectOptions = useMemo(() => {
-    const options = {};
-    for (const column of DETAIL_COLUMNS) {
-      if (column.filter !== 'select') continue;
-      const values = new Set();
-      let blank = false;
-      for (const row of rows) {
-        const text = fieldText(row, column.key, null, null);
-        if (!text) blank = true;
-        else values.add(text);
-      }
-      options[column.key] = {
-        values: [...values].sort((a, b) => a.localeCompare(b, 'pt')),
-        blank,
-      };
-    }
-    return options;
-  }, [rows]);
-  const shown = searched.filter((row) => {
+  const rows = useMemo(
+    () => [...inWeek].sort((a, b) => a.shipDate.localeCompare(b.shipDate) || Number(a.op) - Number(b.op)),
+    [inWeek],
+  );
+  const searched = useMemo(
+    () => (needle
+      ? rows.filter((row) => fold([row.op, row.cliente, row.ref, row.marca, row.codFab].join(' ')).includes(needle))
+      : rows),
+    [rows, needle],
+  );
+  const prepared = useMemo(() => searched.map((row) => {
     const picEmb = model.hasPicagens ? emb.byOp.get(row.op) || 0 : null;
     const picExp = model.hasPicagens ? exp.byOp.get(row.op) || 0 : null;
-    return DETAIL_COLUMNS.every((column) => {
-      const filter = String(colFilters[column.key] || '').trim();
-      if (!filter) return true;
-      const text = fieldText(row, column.key, picEmb, picExp);
-      if (column.filter === 'select') {
-        if (filter === '__vazio__') return text === '';
-        return text === filter;
-      }
-      return fold(text).includes(fold(filter));
-    });
-  });
+    const text = {};
+    for (const column of DETAIL_COLUMNS) text[column.key] = fieldText(row, column.key, picEmb, picExp);
+    return { row, picEmb, picExp, text };
+  }), [searched, model.hasPicagens, emb, exp]);
+  const choices = useMemo(() => {
+    const out = {};
+    for (const column of DETAIL_COLUMNS) out[column.key] = filterChoices(prepared, colFilters, column.key);
+    return out;
+  }, [prepared, colFilters]);
+  const universes = useMemo(() => {
+    const out = {};
+    for (const column of DETAIL_COLUMNS) out[column.key] = new Set();
+    for (const item of prepared) {
+      for (const column of DETAIL_COLUMNS) out[column.key].add(item.text[column.key]);
+    }
+    return out;
+  }, [prepared]);
+  const shown = useMemo(
+    () => prepared.filter((item) => passesColumnFilters(item.text, colFilters, null)),
+    [prepared, colFilters],
+  );
+  const anyFilter = DETAIL_COLUMNS.some((column) => colFilters[column.key]);
   const columnTotals = {};
   for (const [key] of TOTAL_FIELDS) {
     if ((key === 'picEmb' || key === 'picExp') && !model.hasPicagens) {
@@ -320,18 +598,13 @@ export function WeekView({ model, threshold, query, setQuery, today }) {
       continue;
     }
     let sum = 0;
-    for (const row of shown) {
-      if (key === 'picEmb') sum += emb.byOp.get(row.op) || 0;
-      else if (key === 'picExp') sum += exp.byOp.get(row.op) || 0;
+    for (const item of shown) {
+      const row = item.row;
+      if (key === 'picEmb') sum += item.picEmb || 0;
+      else if (key === 'picExp') sum += item.picExp || 0;
       else if (key === 'embalado') sum += jaEmbaladoOf(row);
-      else if (key === 'faltaEmbalar') {
-        const packed = model.hasPicagens ? emb.byOp.get(row.op) || 0 : 0;
-        sum += faltaEmbalarOf(row, packed);
-      }
-      else if (key === 'faltaExpedir') {
-        const shipped = model.hasPicagens ? exp.byOp.get(row.op) || 0 : 0;
-        sum += faltaExpedirOf(expedicaoObjetivo(row), shipped);
-      }
+      else if (key === 'faltaEmbalar') sum += faltaEmbalarOf(row, item.picEmb);
+      else if (key === 'faltaExpedir') sum += faltaExpedirOf(expedicaoObjetivo(row), item.picExp == null ? 0 : item.picExp);
       else sum += num(row[key]);
     }
     columnTotals[key] = sum;
@@ -478,6 +751,11 @@ export function WeekView({ model, threshold, query, setQuery, today }) {
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          {anyFilter ? (
+            <button type="button" className="ghost" data-testid="limpar-filtros" onClick={() => setColFilters({})}>
+              Limpar filtros
+            </button>
+          ) : null}
           <span className="muted">
             {shown.length} de {rows.length}. A pesquisa e os filtros do cabeçalho não alteram os cartões. A cor da linha segue o cumprimento de expedição.
           </span>
@@ -499,37 +777,31 @@ export function WeekView({ model, threshold, query, setQuery, today }) {
                   <th key={column.key} className={column.key === 'op' ? 'sticky' : undefined} title={column.title}>
                     <div className="col-head">
                       <span>{column.label}</span>
-                      {column.filter === 'select' ? (
-                        <select
-                          aria-label={`Filtrar ${column.label}`}
-                          value={colFilters[column.key] || ''}
-                          onChange={(event) => setColFilters((current) => ({ ...current, [column.key]: event.target.value }))}
-                        >
-                          <option value="">Todos</option>
-                          {selectOptions[column.key]?.blank ? <option value="__vazio__">(em branco)</option> : null}
-                          {selectOptions[column.key]?.values.map((value) => (
-                            <option key={value} value={value}>
-                              {column.key === 'shipDate' ? formatDateShort(value) : value}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          aria-label={`Filtrar ${column.label}`}
-                          placeholder="Filtrar"
-                          value={colFilters[column.key] || ''}
-                          onChange={(event) => setColFilters((current) => ({ ...current, [column.key]: event.target.value }))}
-                        />
-                      )}
+                      <ColumnFilter
+                        column={column}
+                        allowed={colFilters[column.key] || null}
+                        choice={choices[column.key]}
+                        universe={universes[column.key]}
+                        onChange={(next) => setColFilters((current) => {
+                          const copy = { ...current };
+                          if (next == null) delete copy[column.key];
+                          else copy[column.key] = next;
+                          return copy;
+                        })}
+                      />
                     </div>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {shown.map((row) => {
-                const picEmb = model.hasPicagens ? emb.byOp.get(row.op) || 0 : null;
-                const picExp = model.hasPicagens ? exp.byOp.get(row.op) || 0 : null;
+              {shown.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={DETAIL_COLUMNS.length}>Nenhuma OP com os filtros escolhidos.</td>
+                </tr>
+              ) : null}
+              {shown.map((item) => {
+                const { row, picEmb, picExp } = item;
                 const goal = expedicaoObjetivo(row);
                 const rowPace = paceOf(picExp, goal);
                 const rowClass = [row.shipDate === today ? 'is-today' : '', rowPace ? `pace-${rowPace}` : ''].filter(Boolean).join(' ');
